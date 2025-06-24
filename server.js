@@ -1,52 +1,63 @@
 const express = require("express");
-const bodyParser = require("body-parser");
+const cron = require("node-cron");
 const admin = require("firebase-admin");
-const fs = require("fs");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Firebase Admin SDK ile bağlantı
-const serviceAccount = require("./serviceAccountKey.json");
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-
+app.use(cors());
 app.use(bodyParser.json());
 
-// Cihaz token'ı alma (opsiyonel)
+const serviceAccount = require("./firebase-service-account.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+// Burada client'tan gelen tokenları bellekte tutacağız (örnek amaçlı, kalıcı değil)
+let deviceTokens = [];
+
+// Client token'ı POST ile kaydeder
 app.post("/register-token", (req, res) => {
   const { token } = req.body;
-  console.log("Token kaydedildi:", token);
+  if (token && !deviceTokens.includes(token)) {
+    deviceTokens.push(token);
+  }
   res.sendStatus(200);
 });
 
-// Frontend her sabah saat 11:00'de bu endpoint'e istek atar
-app.post("/send-reminders", async (req, res) => {
-  const { token, records } = req.body;
+// Bildirim mesajı gönderme fonksiyonu
+function sendDueDateNotification(token, message) {
+  const payload = {
+    notification: {
+      title: "Ödeme Hatırlatması",
+      body: message,
+    },
+  };
+  return admin.messaging().sendToDevice(token, payload);
+}
 
-  if (!token || !records || !Array.isArray(records)) {
-    return res.status(400).send("Eksik parametre");
-  }
+// Her gün Türkiye saatiyle 11:00'de bildirimleri tetikler
+cron.schedule("0 8 * * *", async () => {
+  console.log("Saat 11:00 oldu, bildirim gönderiliyor...");
+  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
 
-  try {
-    for (const record of records) {
-      await admin.messaging().send({
-        token,
-        notification: {
-          title: record.title || "Hatırlatma",
-          body: record.body || "Bugün son ödeme günü"
-        }
-      });
+  // Örnek kayıt (gerçekte client'tan alınacak)
+  const exampleRecords = [
+    { title: "X Bankası", dueDate: today },
+    { title: "Elektrik Faturası", dueDate: "2099-12-31" },
+  ];
+
+  const dueRecords = exampleRecords.filter(rec => rec.dueDate === today);
+
+  for (const token of deviceTokens) {
+    for (const rec of dueRecords) {
+      await sendDueDateNotification(token, `${rec.title} için son ödeme günü! Lütfen ödemeyi unutmayın.`);
     }
-    console.log("📨 Bildirimler gönderildi.");
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("Bildirim gönderme hatası:", err);
-    res.sendStatus(500);
   }
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Push sunucu çalışıyor: http://localhost:${PORT}`);
+  console.log(`Push sunucu ${PORT} portunda çalışıyor.`);
 });
